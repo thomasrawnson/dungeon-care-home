@@ -279,13 +279,12 @@ button{font:inherit;min-height:44px;-webkit-tap-highlight-color:transparent}
   </div>
 </div>
 
+<script src="corridor-pathfinding.js"></script>
 <script>
 const canvas=document.getElementById('game'), ctx=canvas.getContext('2d');
-const W=10,H=7,CW=100,CH=100;
-const entrance={x:0,y:3}, goal={x:9,y:3};
-const basePathCells=[[0,3],[1,3],[2,3],[3,3],[4,3],[5,3],[6,3],[7,3],[8,3],[9,3],[3,2],[4,2],[5,2],[6,2],[7,2],[3,4],[4,4],[5,4],[6,4],[7,4]];
+const CW=100,CH=100;
+const {basePathCells,blockerCells,inList,findPath,blockerPlacementError}=CorridorPathfinding;
 const buildNodes=[[1,2],[2,2],[2,4],[3,1],[4,1],[5,1],[6,1],[7,1],[8,2],[3,5],[4,5],[5,5],[6,5],[7,5],[8,4]];
-const blockerCells=[[3,3],[4,3],[5,3],[6,3],[7,3],[4,2],[5,2],[6,2],[4,4],[5,4],[6,4]];
 const costs={medusa:4,cyclops:5,blocker:3};
 let tea=10,patience=10,wave=0,enemies=[],towers=[],blockers=[],mode='medusa',running=false,speed=1,spawnQueue=[],spawnTimer=0,gameOver=false;
 let last=performance.now(),shake=0,particles=[],floaters=[],projectiles=[],totalKills=0,totalTea=10,path=[];
@@ -294,8 +293,6 @@ const mobileQuery=window.matchMedia('(max-width:620px)');
 function isMobile(){return mobileQuery.matches;}
 function setMobileSelection(html){const el=document.getElementById('mobileSelection');if(el)el.innerHTML=html;}
 
-function key(x,y){return `${x},${y}`;}
-function inList(list,x,y){return list.some(p=>p[0]===x&&p[1]===y);}
 function log(msg){const el=document.getElementById('log');const t=document.createElement('div');t.textContent='• '+msg;el.appendChild(t);el.scrollTop=el.scrollHeight;}
 function showToast(msg,bad=false){const el=document.getElementById('toast');el.textContent=msg;el.classList.toggle('bad',bad);el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2500);}
 function setStatus(msg){document.getElementById('status').textContent=msg;}
@@ -343,20 +340,9 @@ function setMode(m){
   }
 }
 
-function neighbors(x,y){return [[x+1,y],[x-1,y],[x,y+1],[x,y-1]].filter(([a,b])=>a>=0&&a<W&&b>=0&&b<H);}
-function walkable(x,y){if(blockers.some(b=>b.x===x&&b.y===y))return false;return inList(basePathCells,x,y);}
-function findPath(){
-  let q=[[entrance.x,entrance.y]],prev=new Map(),seen=new Set([key(entrance.x,entrance.y)]);
-  while(q.length){
-    let [x,y]=q.shift();
-    if(x===goal.x&&y===goal.y){let out=[[x,y]],k=key(x,y);while(prev.has(k)){const p=prev.get(k);out.push(p);k=key(p[0],p[1]);}return out.reverse();}
-    for(const [nx,ny] of neighbors(x,y)){const k=key(nx,ny);if(!seen.has(k)&&walkable(nx,ny)){seen.add(k);prev.set(k,[x,y]);q.push([nx,ny]);}}
-  }
-  return null;
-}
 function world(x,y){return{x:x*CW+CW/2,y:y*CH+CH/2};}
 function nearestPathIndex(e){let best=0,bd=1e9;path.forEach((p,i)=>{const w=world(p[0],p[1]),d=(w.x-e.x)**2+(w.y-e.y)**2;if(d<bd){bd=d;best=i}});return best;}
-function retargetEnemies(){path=findPath()||path;enemies.forEach(e=>e.pathIndex=Math.max(0,nearestPathIndex(e)));}
+function retargetEnemies(){path=findPath(blockers)||path;enemies.forEach(e=>e.pathIndex=Math.max(0,nearestPathIndex(e)));}
 
 function updateUI(){
   tea=Math.max(0,Math.round(tea*10)/10);
@@ -376,7 +362,7 @@ function updateUI(){
 
 function restartGame(){
   tea=10;totalTea=10;patience=10;wave=0;enemies=[];towers=[];blockers=[];running=false;speed=1;spawnQueue=[];spawnTimer=0;gameOver=false;
-  particles=[];floaters=[];projectiles=[];totalKills=0;lastPlacement=null;path=findPath();
+  particles=[];floaters=[];projectiles=[];totalKills=0;lastPlacement=null;path=findPath(blockers);
   document.getElementById('overlay').classList.remove('show');document.getElementById('speedBtn').textContent='2× SPEED';const msb=document.getElementById('mobileSpeedBtn');if(msb)msb.textContent='2× SPEED';document.getElementById('log').innerHTML='';
   setStatus('Place residents, then start Wave 1.');setMode('medusa');
   log('Bingo starts in five minutes. Naturally, adventurers have arrived.');
@@ -433,15 +419,16 @@ function handleCanvasTap(ev){
 
   if(mode==='blocker'){
     if(running){showToast('Wait until the wave ends before parking scooters.',true);log('Matron says furniture stays put during a wave.');return;}
-    if(!inList(blockerCells,gx,gy)){
+    const placementError=blockerPlacementError(blockers,gx,gy);
+    if(placementError==='invalid-bay'){
       showToast(inList(buildNodes,gx,gy)?"That’s a resident chair. Park scooters on the gold striped corridor bays.":'Scooters only work on the gold striped corridor bays.',true);
       log('Scooter rejected: choose a striped corridor bay.');shake=.12;return;
     }
-    if(blockers.length>=3){showToast('Maximum scooter obstruction achieved. Health & Safety are already upset.',true);return;}
-    if(blockers.some(b=>b.x===gx&&b.y===gy)){showToast('There is already a scooter parked there.',true);return;}
+    if(placementError==='limit'){showToast('Maximum scooter obstruction achieved. Health & Safety are already upset.',true);return;}
+    if(placementError==='occupied'){showToast('There is already a scooter parked there.',true);return;}
     if(tea<costs.blocker){showToast('Not enough Tea for strategic scooter parking.',true);return;}
     const obj={id:nextId++,x:gx,y:gy};blockers.push(obj);
-    const np=findPath();
+    const np=findPath(blockers);
     if(!np){blockers.pop();showToast("Can't park there — adventurers still need a route to Bingo.",true);log('Illegal scooter placement: Bingo Hall must remain reachable.');shake=.28;return;}
     tea-=costs.blocker;path=np;retargetEnemies();rememberPlacement('blocker',obj,costs.blocker);
     showToast('Scooter parked. Adventurers rerouted.');log('Mobility scooter parked with tactical intent.');updateUI();return;
